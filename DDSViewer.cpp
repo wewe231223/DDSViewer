@@ -585,7 +585,14 @@ void ViewerApplication::RefreshSourceTexture() {
     mCommandList->Reset(mCommandAllocators[mFrameIndex].Get(), nullptr);
     if (mAnalyzer.UpdateSourceGpuResources(mDevice.Get(), mCommandList.Get(), mUploader, mSourceTexture, mSourceUpload)) {
         if (mSourceTexture.Get() != nullptr) {
-            const D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc { mSourceTexture->GetDesc().Format, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, { 0, static_cast<UINT>(-1), 0.0f, 0.0f } };
+            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc {};
+            SrvDesc.Format = mSourceTexture->GetDesc().Format;
+            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            SrvDesc.Texture2D.MostDetailedMip = 0;
+            SrvDesc.Texture2D.MipLevels = static_cast<UINT>(-1);
+            SrvDesc.Texture2D.PlaneSlice = 0;
+            SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
             mDevice->CreateShaderResourceView(mSourceTexture.Get(), &SrvDesc, mSourceCpuHandle);
         }
     }
@@ -600,7 +607,14 @@ void ViewerApplication::RefreshCompressedTexture() {
     mCommandList->Reset(mCommandAllocators[mFrameIndex].Get(), nullptr);
     if (mAnalyzer.UpdatePreviewGpuResources(mDevice.Get(), mCommandList.Get(), mUploader, mCompressedTexture, mCompressedUpload)) {
         if (mCompressedTexture.Get() != nullptr) {
-            const D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc { mCompressedTexture->GetDesc().Format, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, { 0, static_cast<UINT>(-1), 0.0f, 0.0f } };
+            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc {};
+            SrvDesc.Format = mCompressedTexture->GetDesc().Format;
+            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            SrvDesc.Texture2D.MostDetailedMip = 0;
+            SrvDesc.Texture2D.MipLevels = static_cast<UINT>(-1);
+            SrvDesc.Texture2D.PlaneSlice = 0;
+            SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
             mDevice->CreateShaderResourceView(mCompressedTexture.Get(), &SrvDesc, mCompressedCpuHandle);
         }
     }
