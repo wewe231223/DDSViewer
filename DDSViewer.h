@@ -1,6 +1,7 @@
 #pragma once
-
+#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <shellapi.h>
 #include <array>
 #include <string>
 #include <vector>
@@ -8,6 +9,19 @@
 #include <dxgi1_6.h>
 #include <d3d12.h>
 #include "TextureArtifactAnalyzer.h"
+
+#pragma comment(lib, "d3d12.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxguid.lib")
+#pragma comment(lib, "dxguid.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxcompiler.lib")
+#ifdef _DEBUG 
+#pragma comment(lib, "./lib/Debug/DirectXTex.lib")
+#else 
+#pragma comment(lib, "lib/Release/DirectXTex.lib")
+#endif 
 
 class ViewerApplication {
 public:

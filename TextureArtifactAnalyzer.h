@@ -1,5 +1,4 @@
 #pragma once
-
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -7,8 +6,15 @@
 #include <wrl/client.h>
 #include <dxgiformat.h>
 #include <d3d12.h>
-#include <DirectXTex.h>
-#include <DirectXMath.h>
+#ifdef _DEBUG 
+#pragma comment(lib, "./lib/Debug/DirectXTex.lib")
+#else 
+#pragma comment(lib, "lib/Release/DirectXTex.lib")
+#endif 
+#include "DirectXTex.h"
+#include "DirectXMath.h"
+
+using namespace DirectX;
 
 enum class CompressionQualityLevel {
     Fast,

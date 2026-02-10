@@ -6,11 +6,19 @@
 #include <array>
 #include <string>
 #include <imgui.h>
-#include <backends/imgui_impl_win32.h>
-#include <backends/imgui_impl_dx12.h>
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx12.h"
 
 using namespace DirectX;
 using namespace Microsoft::WRL;
+
+#ifdef min 
+#undef min
+#endif 
+
+#ifdef max 
+#undef max 
+#endif 
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND WindowHandle, UINT Message, WPARAM WParam, LPARAM LParam);
 
