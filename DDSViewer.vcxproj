@@ -131,9 +131,11 @@
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="TextureArtifactAnalyzer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DDSViewer.cpp" />
+    <ClCompile Include="TextureArtifactAnalyzer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="DDSViewer.rc" />
