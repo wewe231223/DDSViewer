@@ -1,7 +1,8 @@
 #include "TextureArtifactAnalyzer.h"
 
 #include <algorithm>
-#include <DirectXMath.h>
+#include <array>
+#include <cstring>
 
 using namespace DirectX;
 using namespace Microsoft::WRL;
@@ -78,16 +79,14 @@ const std::filesystem::path& TextureDocument::GetPath() const {
 }
 
 CompressionPreviewCache::CompressionPreviewCache() :
-    mCompressedImage {},
-    mMetadata {} {
+    mCompressedImage {} {
 }
 
 CompressionPreviewCache::~CompressionPreviewCache() {
 }
 
 CompressionPreviewCache::CompressionPreviewCache(const CompressionPreviewCache& Other) :
-    mCompressedImage {},
-    mMetadata { Other.mMetadata } {
+    mCompressedImage {} {
     if (Other.mCompressedImage.GetPixels() != nullptr) {
         const HRESULT Hr { mCompressedImage.InitializeFromImage(*Other.mCompressedImage.GetImage(0, 0, 0), false) };
         if (FAILED(Hr)) {
@@ -99,7 +98,6 @@ CompressionPreviewCache::CompressionPreviewCache(const CompressionPreviewCache& 
 CompressionPreviewCache& CompressionPreviewCache::operator=(const CompressionPreviewCache& Other) {
     if (this != &Other) {
         mCompressedImage.Release();
-        mMetadata = Other.mMetadata;
         if (Other.mCompressedImage.GetPixels() != nullptr) {
             const HRESULT Hr { mCompressedImage.InitializeFromImage(*Other.mCompressedImage.GetImage(0, 0, 0), false) };
             if (FAILED(Hr)) {
@@ -111,25 +109,23 @@ CompressionPreviewCache& CompressionPreviewCache::operator=(const CompressionPre
 }
 
 CompressionPreviewCache::CompressionPreviewCache(CompressionPreviewCache&& Other) noexcept :
-    mCompressedImage { std::move(Other.mCompressedImage) },
-    mMetadata { Other.mMetadata } {
+    mCompressedImage { std::move(Other.mCompressedImage) } {
 }
 
 CompressionPreviewCache& CompressionPreviewCache::operator=(CompressionPreviewCache&& Other) noexcept {
     if (this != &Other) {
         mCompressedImage = std::move(Other.mCompressedImage);
-        mMetadata = Other.mMetadata;
     }
     return *this;
 }
 
 bool CompressionPreviewCache::Rebuild(const TextureDocument& Document, const AnalyzerSettings& Settings) {
-    ScratchImage WorkingImage {};
-    const TexMetadata SourceMetadata { Document.GetMetadata() };
     if (Document.GetSourceImage().GetPixels() == nullptr) {
         return false;
     }
 
+    ScratchImage WorkingImage {};
+    const TexMetadata SourceMetadata { Document.GetMetadata() };
     if (Settings.GenerateMipmaps) {
         const HRESULT MipHr { GenerateMipMaps(Document.GetSourceImage().GetImages(), Document.GetSourceImage().GetImageCount(), SourceMetadata, Settings.MipFilter, 0, WorkingImage) };
         if (FAILED(MipHr)) {
@@ -144,32 +140,13 @@ bool CompressionPreviewCache::Rebuild(const TextureDocument& Document, const Ana
 
     const DXGI_FORMAT TargetFormat { ResolveSrgbVariant(Settings.Format, Settings.IsSrgb) };
     ScratchImage Compressed {};
-    const TEX_COMPRESS_FLAGS CompressFlags { static_cast<TEX_COMPRESS_FLAGS>(Settings.CompressionFlags) };
-    HRESULT CompressHr { Compress(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), TargetFormat, CompressFlags, Settings.AlphaWeight, Compressed) };
-    if (Settings.IsNormalMap && SUCCEEDED(CompressHr)) {
-        ScratchImage Normalized {};
-        const TEX_FILTER_FLAGS NormalMapFlags { static_cast<TEX_FILTER_FLAGS>(TEX_FILTER_DEFAULT | TEX_FILTER_SEPARATE_ALPHA | TEX_FILTER_NORMAL_MAP) };
-        CompressHr = Compress(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), TargetFormat, static_cast<TEX_COMPRESS_FLAGS>(CompressFlags | TEX_COMPRESS_BC7_USE_3SUBSETS), Settings.AlphaWeight, Normalized);
-        if (SUCCEEDED(CompressHr)) {
-            Compressed = std::move(Normalized);
-        }
-        if (Settings.ReconstructZ) {
-            ScratchImage Reconstructed {};
-            const HRESULT ReconstructHr { ComputeNormalMap(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), CNMAP_CHANNEL_RED, 1.0f, Reconstructed) };
-            if (SUCCEEDED(ReconstructHr)) {
-                WorkingImage = std::move(Reconstructed);
-                CompressHr = Compress(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), TargetFormat, CompressFlags, Settings.AlphaWeight, Compressed);
-            }
-        }
-        (void)NormalMapFlags;
-    }
-
+    const TEX_COMPRESS_FLAGS Flags { BuildCompressFlags(Settings) };
+    const HRESULT CompressHr { Compress(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), TargetFormat, Flags, Settings.AlphaWeight, Compressed) };
     if (FAILED(CompressHr)) {
         return false;
     }
 
     mCompressedImage = std::move(Compressed);
-    mMetadata = mCompressedImage.GetMetadata();
     return true;
 }
 
@@ -181,8 +158,9 @@ bool CompressionPreviewCache::SaveAsDds(const std::filesystem::path& OutputPath)
     return SUCCEEDED(Hr);
 }
 
-TextureMemoryMetrics CompressionPreviewCache::BuildMetrics() const {
+TextureMemoryMetrics CompressionPreviewCache::BuildMetrics(const TexMetadata& SourceMetadata) const {
     TextureMemoryMetrics Metrics { 0, 0, 0.0 };
+    Metrics.SourceBytes = static_cast<size_t>(SourceMetadata.width) * static_cast<size_t>(SourceMetadata.height) * 4;
     if (mCompressedImage.GetPixels() == nullptr) {
         return Metrics;
     }
@@ -191,17 +169,12 @@ TextureMemoryMetrics CompressionPreviewCache::BuildMetrics() const {
         return Metrics;
     }
     Metrics.CompressedBytes = FirstImage->slicePitch;
-    Metrics.SourceBytes = static_cast<size_t>(mMetadata.width) * static_cast<size_t>(mMetadata.height) * 4;
     Metrics.CompressionRatio = Metrics.CompressedBytes == 0 ? 0.0 : static_cast<double>(Metrics.SourceBytes) / static_cast<double>(Metrics.CompressedBytes);
     return Metrics;
 }
 
 const ScratchImage& CompressionPreviewCache::GetCompressedImage() const {
     return mCompressedImage;
-}
-
-const TexMetadata& CompressionPreviewCache::GetMetadata() const {
-    return mMetadata;
 }
 
 Dx12TextureUploader::Dx12TextureUploader() {
@@ -238,19 +211,7 @@ bool Dx12TextureUploader::CreateTextureAndUpload(ID3D12Device* Device, ID3D12Gra
     }
 
     const TexMetadata Metadata { Image.GetMetadata() };
-    const D3D12_RESOURCE_DESC TextureDesc {
-        D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-        0,
-        Metadata.width,
-        static_cast<UINT>(Metadata.height),
-        static_cast<UINT16>(Metadata.arraySize),
-        static_cast<UINT16>(Metadata.mipLevels),
-        Metadata.format,
-        { 1, 0 },
-        D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        D3D12_RESOURCE_FLAG_NONE
-    };
-
+    const D3D12_RESOURCE_DESC TextureDesc { D3D12_RESOURCE_DIMENSION_TEXTURE2D, 0, Metadata.width, static_cast<UINT>(Metadata.height), static_cast<UINT16>(Metadata.arraySize), static_cast<UINT16>(Metadata.mipLevels), Metadata.format, { 1, 0 }, D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_RESOURCE_FLAG_NONE };
     const D3D12_HEAP_PROPERTIES DefaultHeap { D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0 };
     const HRESULT TextureHr { Device->CreateCommittedResource(&DefaultHeap, D3D12_HEAP_FLAG_NONE, &TextureDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(TextureOut.ReleaseAndGetAddressOf())) };
     if (FAILED(TextureHr)) {
@@ -264,18 +225,7 @@ bool Dx12TextureUploader::CreateTextureAndUpload(ID3D12Device* Device, ID3D12Gra
     UINT64 UploadBytes { 0 };
     Device->GetCopyableFootprints(&TextureDesc, 0, SubresourceCount, 0, Footprints.data(), NumRows.data(), RowSizeInBytes.data(), &UploadBytes);
 
-    const D3D12_RESOURCE_DESC UploadDesc {
-        D3D12_RESOURCE_DIMENSION_BUFFER,
-        0,
-        UploadBytes,
-        1,
-        1,
-        1,
-        DXGI_FORMAT_UNKNOWN,
-        { 1, 0 },
-        D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        D3D12_RESOURCE_FLAG_NONE
-    };
+    const D3D12_RESOURCE_DESC UploadDesc { D3D12_RESOURCE_DIMENSION_BUFFER, 0, UploadBytes, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 }, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
     const D3D12_HEAP_PROPERTIES UploadHeap { D3D12_HEAP_TYPE_UPLOAD, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0 };
     const HRESULT UploadHr { Device->CreateCommittedResource(&UploadHeap, D3D12_HEAP_FLAG_NONE, &UploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(UploadOut.ReleaseAndGetAddressOf())) };
     if (FAILED(UploadHr)) {
@@ -315,25 +265,15 @@ bool Dx12TextureUploader::CreateTextureAndUpload(ID3D12Device* Device, ID3D12Gra
         CommandList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
     }
 
-    const D3D12_RESOURCE_BARRIER Barrier {
-        D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-        D3D12_RESOURCE_BARRIER_FLAG_NONE,
-        {
-            TextureOut.Get(),
-            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-        }
-    };
+    const D3D12_RESOURCE_BARRIER Barrier { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, { TextureOut.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } };
     CommandList->ResourceBarrier(1, &Barrier);
-
     return true;
 }
 
 TextureArtifactAnalyzer::TextureArtifactAnalyzer() :
     mDocument {},
     mPreviewCache {},
-    mCurrentSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_DEFAULT, true, false, false, false, 1.0f, TEX_COMPRESS_DEFAULT },
+    mCurrentSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_DEFAULT, true, false, false, false, CompressionQualityLevel::Normal, ChannelViewMode::Rgba, 1.0f },
     mViewport { 1.0f, XMFLOAT2 { 0.0f, 0.0f }, XMFLOAT2 { 0.0f, 0.0f }, false } {
 }
 
@@ -398,11 +338,19 @@ bool TextureArtifactAnalyzer::SaveCurrentAsDds() const {
 }
 
 TextureMemoryMetrics TextureArtifactAnalyzer::GetMetrics() const {
-    return mPreviewCache.BuildMetrics();
+    return mPreviewCache.BuildMetrics(mDocument.GetMetadata());
 }
 
 const SyncViewportState& TextureArtifactAnalyzer::GetViewportState() const {
     return mViewport;
+}
+
+const ScratchImage& TextureArtifactAnalyzer::GetSourceImage() const {
+    return mDocument.GetSourceImage();
+}
+
+const ScratchImage& TextureArtifactAnalyzer::GetCompressedImage() const {
+    return mPreviewCache.GetCompressedImage();
 }
 
 void TextureArtifactAnalyzer::HandleZoom(float WheelStep, const XMFLOAT2& MousePos) {
@@ -434,54 +382,85 @@ void TextureArtifactAnalyzer::EndPan() {
     mViewport.IsPanning = false;
 }
 
+bool TextureArtifactAnalyzer::UpdateSourceGpuResources(ID3D12Device* Device, ID3D12GraphicsCommandList* CommandList, Dx12TextureUploader& Uploader, ComPtr<ID3D12Resource>& LeftTextureOut, ComPtr<ID3D12Resource>& UploadOut) {
+    return Uploader.CreateTextureAndUpload(Device, CommandList, mDocument.GetSourceImage(), LeftTextureOut, UploadOut);
+}
+
 bool TextureArtifactAnalyzer::UpdatePreviewGpuResources(ID3D12Device* Device, ID3D12GraphicsCommandList* CommandList, Dx12TextureUploader& Uploader, ComPtr<ID3D12Resource>& RightTextureOut, ComPtr<ID3D12Resource>& UploadOut) {
     return Uploader.CreateTextureAndUpload(Device, CommandList, mPreviewCache.GetCompressedImage(), RightTextureOut, UploadOut);
 }
 
-std::vector<DXGI_FORMAT> BuildCompressionCandidateFormats() {
-    std::vector<DXGI_FORMAT> Formats {
-        DXGI_FORMAT_R8G8B8A8_UNORM,
-        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-        DXGI_FORMAT_B8G8R8A8_UNORM,
-        DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-        DXGI_FORMAT_BC1_UNORM,
-        DXGI_FORMAT_BC1_UNORM_SRGB,
-        DXGI_FORMAT_BC2_UNORM,
-        DXGI_FORMAT_BC2_UNORM_SRGB,
-        DXGI_FORMAT_BC3_UNORM,
-        DXGI_FORMAT_BC3_UNORM_SRGB,
-        DXGI_FORMAT_BC4_UNORM,
-        DXGI_FORMAT_BC4_SNORM,
-        DXGI_FORMAT_BC5_UNORM,
-        DXGI_FORMAT_BC5_SNORM,
-        DXGI_FORMAT_BC6H_UF16,
-        DXGI_FORMAT_BC6H_SF16,
-        DXGI_FORMAT_BC7_UNORM,
-        DXGI_FORMAT_BC7_UNORM_SRGB
+std::vector<FormatOption> BuildCompressionCandidateFormats() {
+    std::vector<FormatOption> Formats {
+        { DXGI_FORMAT_R8_UNORM, "R8_UNORM" },
+        { DXGI_FORMAT_R8_SNORM, "R8_SNORM" },
+        { DXGI_FORMAT_R8G8_UNORM, "R8G8_UNORM" },
+        { DXGI_FORMAT_R8G8_SNORM, "R8G8_SNORM" },
+        { DXGI_FORMAT_R8G8B8A8_UNORM, "R8G8B8A8_UNORM" },
+        { DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, "R8G8B8A8_UNORM_SRGB" },
+        { DXGI_FORMAT_B8G8R8A8_UNORM, "B8G8R8A8_UNORM" },
+        { DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, "B8G8R8A8_UNORM_SRGB" },
+        { DXGI_FORMAT_R10G10B10A2_UNORM, "R10G10B10A2_UNORM" },
+        { DXGI_FORMAT_R11G11B10_FLOAT, "R11G11B10_FLOAT" },
+        { DXGI_FORMAT_R16_FLOAT, "R16_FLOAT" },
+        { DXGI_FORMAT_R16G16_FLOAT, "R16G16_FLOAT" },
+        { DXGI_FORMAT_R16G16B16A16_FLOAT, "R16G16B16A16_FLOAT" },
+        { DXGI_FORMAT_R32_FLOAT, "R32_FLOAT" },
+        { DXGI_FORMAT_R32G32_FLOAT, "R32G32_FLOAT" },
+        { DXGI_FORMAT_R32G32B32A32_FLOAT, "R32G32B32A32_FLOAT" },
+        { DXGI_FORMAT_BC1_UNORM, "BC1_UNORM" },
+        { DXGI_FORMAT_BC1_UNORM_SRGB, "BC1_UNORM_SRGB" },
+        { DXGI_FORMAT_BC2_UNORM, "BC2_UNORM" },
+        { DXGI_FORMAT_BC2_UNORM_SRGB, "BC2_UNORM_SRGB" },
+        { DXGI_FORMAT_BC3_UNORM, "BC3_UNORM" },
+        { DXGI_FORMAT_BC3_UNORM_SRGB, "BC3_UNORM_SRGB" },
+        { DXGI_FORMAT_BC4_UNORM, "BC4_UNORM" },
+        { DXGI_FORMAT_BC4_SNORM, "BC4_SNORM" },
+        { DXGI_FORMAT_BC5_UNORM, "BC5_UNORM" },
+        { DXGI_FORMAT_BC5_SNORM, "BC5_SNORM" },
+        { DXGI_FORMAT_BC6H_UF16, "BC6H_UF16" },
+        { DXGI_FORMAT_BC6H_SF16, "BC6H_SF16" },
+        { DXGI_FORMAT_BC7_UNORM, "BC7_UNORM" },
+        { DXGI_FORMAT_BC7_UNORM_SRGB, "BC7_UNORM_SRGB" }
     };
     return Formats;
 }
 
 DXGI_FORMAT ResolveSrgbVariant(DXGI_FORMAT Format, bool IsSrgb) {
-    if (IsSrgb) {
-        if (Format == DXGI_FORMAT_BC1_UNORM) {
-            return DXGI_FORMAT_BC1_UNORM_SRGB;
-        }
-        if (Format == DXGI_FORMAT_BC2_UNORM) {
-            return DXGI_FORMAT_BC2_UNORM_SRGB;
-        }
-        if (Format == DXGI_FORMAT_BC3_UNORM) {
-            return DXGI_FORMAT_BC3_UNORM_SRGB;
-        }
-        if (Format == DXGI_FORMAT_BC7_UNORM) {
-            return DXGI_FORMAT_BC7_UNORM_SRGB;
-        }
-        if (Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
-            return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-        }
-        if (Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
-            return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        }
+    if (!IsSrgb) {
+        return Format;
+    }
+    if (Format == DXGI_FORMAT_BC1_UNORM) {
+        return DXGI_FORMAT_BC1_UNORM_SRGB;
+    }
+    if (Format == DXGI_FORMAT_BC2_UNORM) {
+        return DXGI_FORMAT_BC2_UNORM_SRGB;
+    }
+    if (Format == DXGI_FORMAT_BC3_UNORM) {
+        return DXGI_FORMAT_BC3_UNORM_SRGB;
+    }
+    if (Format == DXGI_FORMAT_BC7_UNORM) {
+        return DXGI_FORMAT_BC7_UNORM_SRGB;
+    }
+    if (Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
+        return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    }
+    if (Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+        return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
     }
     return Format;
+}
+
+TEX_COMPRESS_FLAGS BuildCompressFlags(const AnalyzerSettings& Settings) {
+    TEX_COMPRESS_FLAGS Flags { TEX_COMPRESS_DEFAULT };
+    if (Settings.CompressionQuality == CompressionQualityLevel::Fast) {
+        Flags = static_cast<TEX_COMPRESS_FLAGS>(Flags | TEX_COMPRESS_BC7_QUICK);
+    }
+    if (Settings.CompressionQuality == CompressionQualityLevel::Best) {
+        Flags = static_cast<TEX_COMPRESS_FLAGS>(Flags | TEX_COMPRESS_BC7_USE_3SUBSETS);
+    }
+    if (Settings.IsNormalMap) {
+        Flags = static_cast<TEX_COMPRESS_FLAGS>(Flags | TEX_COMPRESS_UNIFORM);
+    }
+    return Flags;
 }

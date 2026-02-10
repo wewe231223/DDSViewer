@@ -10,6 +10,21 @@
 #include <DirectXTex.h>
 #include <DirectXMath.h>
 
+enum class CompressionQualityLevel {
+    Fast,
+    Normal,
+    Best
+};
+
+enum class ChannelViewMode {
+    Rgba,
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Diff
+};
+
 struct AnalyzerSettings {
     DXGI_FORMAT Format;
     TEX_FILTER_FLAGS MipFilter;
@@ -17,8 +32,9 @@ struct AnalyzerSettings {
     bool IsSrgb;
     bool IsNormalMap;
     bool ReconstructZ;
+    CompressionQualityLevel CompressionQuality;
+    ChannelViewMode ChannelView;
     float AlphaWeight;
-    uint32_t CompressionFlags;
 };
 
 struct TextureMemoryMetrics {
@@ -32,6 +48,11 @@ struct SyncViewportState {
     DirectX::XMFLOAT2 Pan;
     DirectX::XMFLOAT2 LastMousePos;
     bool IsPanning;
+};
+
+struct FormatOption {
+    DXGI_FORMAT Format;
+    std::string Name;
 };
 
 class TextureDocument {
@@ -67,13 +88,11 @@ public:
 public:
     bool Rebuild(const TextureDocument& Document, const AnalyzerSettings& Settings);
     bool SaveAsDds(const std::filesystem::path& OutputPath) const;
-    TextureMemoryMetrics BuildMetrics() const;
+    TextureMemoryMetrics BuildMetrics(const DirectX::TexMetadata& SourceMetadata) const;
     const DirectX::ScratchImage& GetCompressedImage() const;
-    const DirectX::TexMetadata& GetMetadata() const;
 
 private:
     DirectX::ScratchImage mCompressedImage;
-    DirectX::TexMetadata mMetadata;
 };
 
 class Dx12TextureUploader {
@@ -107,10 +126,15 @@ public:
     bool SaveCurrentAsDds() const;
     TextureMemoryMetrics GetMetrics() const;
     const SyncViewportState& GetViewportState() const;
+    const DirectX::ScratchImage& GetSourceImage() const;
+    const DirectX::ScratchImage& GetCompressedImage() const;
+
     void HandleZoom(float WheelStep, const DirectX::XMFLOAT2& MousePos);
     void BeginPan(const DirectX::XMFLOAT2& MousePos);
     void UpdatePan(const DirectX::XMFLOAT2& MousePos);
     void EndPan();
+
+    bool UpdateSourceGpuResources(ID3D12Device* Device, ID3D12GraphicsCommandList* CommandList, Dx12TextureUploader& Uploader, Microsoft::WRL::ComPtr<ID3D12Resource>& LeftTextureOut, Microsoft::WRL::ComPtr<ID3D12Resource>& UploadOut);
     bool UpdatePreviewGpuResources(ID3D12Device* Device, ID3D12GraphicsCommandList* CommandList, Dx12TextureUploader& Uploader, Microsoft::WRL::ComPtr<ID3D12Resource>& RightTextureOut, Microsoft::WRL::ComPtr<ID3D12Resource>& UploadOut);
 
 private:
@@ -120,5 +144,6 @@ private:
     SyncViewportState mViewport;
 };
 
-std::vector<DXGI_FORMAT> BuildCompressionCandidateFormats();
+std::vector<FormatOption> BuildCompressionCandidateFormats();
 DXGI_FORMAT ResolveSrgbVariant(DXGI_FORMAT Format, bool IsSrgb);
+TEX_COMPRESS_FLAGS BuildCompressFlags(const AnalyzerSettings& Settings);
