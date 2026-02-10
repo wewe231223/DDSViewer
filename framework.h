@@ -13,3 +13,11 @@
 #include <malloc.h>
 #include <memory.h>
 #include <tchar.h>
+
+#include <DirectXTex.h>
+
+#ifdef _DEBUG 
+#pragma comment(lib, "lib/Debug/DirectXTex.lib")
+#else 
+#pragma comment(lib, "lib/Release/DirectXTex.lib")
+#endif 
