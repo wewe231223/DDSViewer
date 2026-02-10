@@ -124,24 +124,32 @@ bool CompressionPreviewCache::Rebuild(const TextureDocument& Document, const Ana
         return false;
     }
 
-    ScratchImage WorkingImage {};
+    const ScratchImage* InputImage { &Document.GetSourceImage() };
+    ScratchImage GeneratedMipImage {};
     const TexMetadata SourceMetadata { Document.GetMetadata() };
     if (Settings.GenerateMipmaps) {
-        const HRESULT MipHr { GenerateMipMaps(Document.GetSourceImage().GetImages(), Document.GetSourceImage().GetImageCount(), SourceMetadata, Settings.MipFilter, 0, WorkingImage) };
+        const HRESULT MipHr { GenerateMipMaps(Document.GetSourceImage().GetImages(), Document.GetSourceImage().GetImageCount(), SourceMetadata, Settings.MipFilter, 0, GeneratedMipImage) };
         if (FAILED(MipHr)) {
             return false;
         }
-    } else {
-        const HRESULT CloneHr { WorkingImage.InitializeFromImage(*Document.GetSourceImage().GetImage(0, 0, 0), false) };
-        if (FAILED(CloneHr)) {
-            return false;
-        }
+        InputImage = &GeneratedMipImage;
     }
 
     const DXGI_FORMAT TargetFormat { ResolveSrgbVariant(Settings.Format, Settings.IsSrgb) };
+    const DXGI_FORMAT SourceFormat { InputImage->GetMetadata().format };
+    if (TargetFormat == SourceFormat && !Settings.IsNormalMap) {
+        ScratchImage ClonedImage {};
+        const HRESULT CloneHr { ClonedImage.InitializeFromImage(*InputImage->GetImage(0, 0, 0), false) };
+        if (FAILED(CloneHr)) {
+            return false;
+        }
+        mCompressedImage = std::move(ClonedImage);
+        return true;
+    }
+
     ScratchImage Compressed {};
     const TEX_COMPRESS_FLAGS Flags { BuildCompressFlags(Settings) };
-    const HRESULT CompressHr { Compress(WorkingImage.GetImages(), WorkingImage.GetImageCount(), WorkingImage.GetMetadata(), TargetFormat, Flags, Settings.AlphaWeight, Compressed) };
+    const HRESULT CompressHr { Compress(InputImage->GetImages(), InputImage->GetImageCount(), InputImage->GetMetadata(), TargetFormat, Flags, Settings.AlphaWeight, Compressed) };
     if (FAILED(CompressHr)) {
         return false;
     }
@@ -335,6 +343,10 @@ bool TextureArtifactAnalyzer::SaveCurrentAsDds() const {
     std::filesystem::path OutputPath { SourcePath };
     OutputPath.replace_extension(L".dds");
     return mPreviewCache.SaveAsDds(OutputPath);
+}
+
+bool TextureArtifactAnalyzer::HasTexture() const {
+    return mDocument.GetSourceImage().GetPixels() != nullptr;
 }
 
 TextureMemoryMetrics TextureArtifactAnalyzer::GetMetrics() const {

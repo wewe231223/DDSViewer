@@ -138,6 +138,7 @@ public:
     bool LoadTexture(const std::filesystem::path& FilePath);
     bool ApplySettings(const AnalyzerSettings& Settings);
     bool SaveCurrentAsDds() const;
+    bool HasTexture() const;
     TextureMemoryMetrics GetMetrics() const;
     const SyncViewportState& GetViewportState() const;
     const DirectX::ScratchImage& GetSourceImage() const;

@@ -3,6 +3,7 @@
 
 #include <shellapi.h>
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <string>
 #include <imgui.h>
@@ -57,6 +58,10 @@ ViewerApplication::ViewerApplication() :
     mHasSourceTexture { false },
     mHasCompressedTexture { false },
     mHasPendingDrop { false },
+    mIsProcessing { false },
+    mHasLastError { false },
+    mLastLoadSeconds { 0.0 },
+    mLastCompressSeconds { 0.0 },
     mPendingDropPath {} {
 }
 
@@ -100,6 +105,10 @@ ViewerApplication::ViewerApplication(const ViewerApplication& Other) :
     mHasSourceTexture { Other.mHasSourceTexture },
     mHasCompressedTexture { Other.mHasCompressedTexture },
     mHasPendingDrop { Other.mHasPendingDrop },
+    mIsProcessing { Other.mIsProcessing },
+    mHasLastError { Other.mHasLastError },
+    mLastLoadSeconds { Other.mLastLoadSeconds },
+    mLastCompressSeconds { Other.mLastCompressSeconds },
     mPendingDropPath { std::move(Other.mPendingDropPath) } {
     memcpy(mWindowClassName, Other.mWindowClassName, sizeof(mWindowClassName));
 }
@@ -126,6 +135,10 @@ ViewerApplication& ViewerApplication::operator=(const ViewerApplication& Other) 
         mHasSourceTexture = Other.mHasSourceTexture;
         mHasCompressedTexture = Other.mHasCompressedTexture;
         mHasPendingDrop = Other.mHasPendingDrop;
+        mIsProcessing = Other.mIsProcessing;
+        mHasLastError = Other.mHasLastError;
+        mLastLoadSeconds = Other.mLastLoadSeconds;
+        mLastCompressSeconds = Other.mLastCompressSeconds;
         mPendingDropPath = Other.mPendingDropPath;
     }
     return *this;
@@ -166,6 +179,10 @@ ViewerApplication::ViewerApplication(ViewerApplication&& Other) noexcept :
     mHasSourceTexture { Other.mHasSourceTexture },
     mHasCompressedTexture { Other.mHasCompressedTexture },
     mHasPendingDrop { Other.mHasPendingDrop },
+    mIsProcessing { Other.mIsProcessing },
+    mHasLastError { Other.mHasLastError },
+    mLastLoadSeconds { Other.mLastLoadSeconds },
+    mLastCompressSeconds { Other.mLastCompressSeconds },
     mPendingDropPath { std::move(Other.mPendingDropPath) } {
     memcpy(mWindowClassName, Other.mWindowClassName, sizeof(mWindowClassName));
     Other.mWindowHandle = nullptr;
@@ -209,10 +226,15 @@ ViewerApplication& ViewerApplication::operator=(ViewerApplication&& Other) noexc
         mHasSourceTexture = Other.mHasSourceTexture;
         mHasCompressedTexture = Other.mHasCompressedTexture;
         mHasPendingDrop = Other.mHasPendingDrop;
+        mIsProcessing = Other.mIsProcessing;
+        mHasLastError = Other.mHasLastError;
+        mLastLoadSeconds = Other.mLastLoadSeconds;
+        mLastCompressSeconds = Other.mLastCompressSeconds;
         mPendingDropPath = std::move(Other.mPendingDropPath);
         Other.mWindowHandle = nullptr;
         Other.mFenceEvent = nullptr;
         Other.mHasPendingDrop = false;
+        Other.mIsProcessing = false;
     }
     return *this;
 }
@@ -439,75 +461,111 @@ bool ViewerApplication::BeginFrame() {
 void ViewerApplication::RenderUi() {
     ImGui::Begin("Texture Artifact Analyzer");
 
-    if (!mFormatOptions.empty()) {
-        std::vector<const char*> FormatNames {};
-        FormatNames.reserve(mFormatOptions.size());
-        for (size_t Index { 0 }; Index < mFormatOptions.size(); ++Index) {
-            FormatNames.push_back(mFormatOptions[Index].Name.c_str());
+    const bool HasTexture { mAnalyzer.HasTexture() };
+    if (mIsProcessing) {
+        ImGui::Text("처리 중...");
+    }
+
+    if (mHasLastError) {
+        ImGui::Text("최근 작업이 실패했습니다.");
+    }
+
+    ImGui::Text("최근 로드 시간: %.3f 초", mLastLoadSeconds);
+    ImGui::Text("최근 압축 시간: %.3f 초", mLastCompressSeconds);
+
+    if (!mIsProcessing) {
+        if (!mFormatOptions.empty()) {
+            std::vector<const char*> FormatNames {};
+            FormatNames.reserve(mFormatOptions.size());
+            for (size_t Index { 0 }; Index < mFormatOptions.size(); ++Index) {
+                FormatNames.push_back(mFormatOptions[Index].Name.c_str());
+            }
+            if (ImGui::Combo("Format", &mSelectedFormatIndex, FormatNames.data(), static_cast<int>(FormatNames.size()))) {
+                mSettings.Format = mFormatOptions[static_cast<size_t>(mSelectedFormatIndex)].Format;
+                ApplySettingsAndRefreshPreview();
+            }
         }
-        if (ImGui::Combo("Format", &mSelectedFormatIndex, FormatNames.data(), static_cast<int>(FormatNames.size()))) {
-            mSettings.Format = mFormatOptions[static_cast<size_t>(mSelectedFormatIndex)].Format;
+
+        const char* QualityItems[] { "Fast", "Normal", "Best" };
+        int QualityIndex { static_cast<int>(mSettings.CompressionQuality) };
+        if (ImGui::Combo("Compression Quality", &QualityIndex, QualityItems, 3)) {
+            mSettings.CompressionQuality = static_cast<CompressionQualityLevel>(QualityIndex);
             ApplySettingsAndRefreshPreview();
         }
-    }
 
-    const char* QualityItems[] { "Fast", "Normal", "Best" };
-    int QualityIndex { static_cast<int>(mSettings.CompressionQuality) };
-    if (ImGui::Combo("Compression Quality", &QualityIndex, QualityItems, 3)) {
-        mSettings.CompressionQuality = static_cast<CompressionQualityLevel>(QualityIndex);
-        ApplySettingsAndRefreshPreview();
-    }
+        const char* MipItems[] { "Point", "Box", "Linear", "Fant", "Kaiser" };
+        int MipIndex { 3 };
+        if (mSettings.MipFilter == TEX_FILTER_POINT) {
+            MipIndex = 0;
+        }
+        if (mSettings.MipFilter == TEX_FILTER_BOX) {
+            MipIndex = 1;
+        }
+        if (mSettings.MipFilter == TEX_FILTER_LINEAR) {
+            MipIndex = 2;
+        }
+        if (mSettings.MipFilter == TEX_FILTER_FANT) {
+            MipIndex = 3;
+        }
+        if (mSettings.MipFilter == TEX_FILTER_CUBIC) {
+            MipIndex = 4;
+        }
+        if (ImGui::Combo("Mipmap Filter", &MipIndex, MipItems, 5)) {
+            if (MipIndex == 0) {
+                mSettings.MipFilter = TEX_FILTER_POINT;
+            }
+            if (MipIndex == 1) {
+                mSettings.MipFilter = TEX_FILTER_BOX;
+            }
+            if (MipIndex == 2) {
+                mSettings.MipFilter = TEX_FILTER_LINEAR;
+            }
+            if (MipIndex == 3) {
+                mSettings.MipFilter = TEX_FILTER_FANT;
+            }
+            if (MipIndex == 4) {
+                mSettings.MipFilter = TEX_FILTER_CUBIC;
+            }
+            ApplySettingsAndRefreshPreview();
+        }
 
-    const char* MipItems[] { "Point", "Box", "Linear", "Fant", "Kaiser" };
-    int MipIndex { 3 };
-    if (mSettings.MipFilter == TEX_FILTER_POINT) {
-        MipIndex = 0;
-    }
-    if (mSettings.MipFilter == TEX_FILTER_BOX) {
-        MipIndex = 1;
-    }
-    if (mSettings.MipFilter == TEX_FILTER_LINEAR) {
-        MipIndex = 2;
-    }
-    if (mSettings.MipFilter == TEX_FILTER_FANT) {
-        MipIndex = 3;
-    }
-    if (mSettings.MipFilter == TEX_FILTER_CUBIC) {
-        MipIndex = 4;
-    }
-    if (ImGui::Combo("Mipmap Filter", &MipIndex, MipItems, 5)) {
-        if (MipIndex == 0) {
-            mSettings.MipFilter = TEX_FILTER_POINT;
+        if (ImGui::Checkbox("Generate Mipmaps", &mSettings.GenerateMipmaps)) {
+            ApplySettingsAndRefreshPreview();
         }
-        if (MipIndex == 1) {
-            mSettings.MipFilter = TEX_FILTER_BOX;
+        if (ImGui::Checkbox("sRGB", &mSettings.IsSrgb)) {
+            ApplySettingsAndRefreshPreview();
         }
-        if (MipIndex == 2) {
-            mSettings.MipFilter = TEX_FILTER_LINEAR;
+        if (ImGui::Checkbox("Normal Map Mode", &mSettings.IsNormalMap)) {
+            ApplySettingsAndRefreshPreview();
         }
-        if (MipIndex == 3) {
-            mSettings.MipFilter = TEX_FILTER_FANT;
+        if (ImGui::Checkbox("Reconstruct Z", &mSettings.ReconstructZ)) {
+            ApplySettingsAndRefreshPreview();
         }
-        if (MipIndex == 4) {
-            mSettings.MipFilter = TEX_FILTER_CUBIC;
+        if (ImGui::SliderFloat("Alpha Weight", &mSettings.AlphaWeight, 0.0f, 2.0f)) {
+            ApplySettingsAndRefreshPreview();
         }
-        ApplySettingsAndRefreshPreview();
-    }
-
-    if (ImGui::Checkbox("Generate Mipmaps", &mSettings.GenerateMipmaps)) {
-        ApplySettingsAndRefreshPreview();
-    }
-    if (ImGui::Checkbox("sRGB", &mSettings.IsSrgb)) {
-        ApplySettingsAndRefreshPreview();
-    }
-    if (ImGui::Checkbox("Normal Map Mode", &mSettings.IsNormalMap)) {
-        ApplySettingsAndRefreshPreview();
-    }
-    if (ImGui::Checkbox("Reconstruct Z", &mSettings.ReconstructZ)) {
-        ApplySettingsAndRefreshPreview();
-    }
-    if (ImGui::SliderFloat("Alpha Weight", &mSettings.AlphaWeight, 0.0f, 2.0f)) {
-        ApplySettingsAndRefreshPreview();
+    } else {
+        ImGui::BeginDisabled();
+        if (!mFormatOptions.empty()) {
+            std::vector<const char*> FormatNames {};
+            FormatNames.reserve(mFormatOptions.size());
+            for (size_t Index { 0 }; Index < mFormatOptions.size(); ++Index) {
+                FormatNames.push_back(mFormatOptions[Index].Name.c_str());
+            }
+            ImGui::Combo("Format", &mSelectedFormatIndex, FormatNames.data(), static_cast<int>(FormatNames.size()));
+        }
+        const char* QualityItems[] { "Fast", "Normal", "Best" };
+        int QualityIndex { static_cast<int>(mSettings.CompressionQuality) };
+        ImGui::Combo("Compression Quality", &QualityIndex, QualityItems, 3);
+        const char* MipItems[] { "Point", "Box", "Linear", "Fant", "Kaiser" };
+        int MipIndex { 3 };
+        ImGui::Combo("Mipmap Filter", &MipIndex, MipItems, 5);
+        ImGui::Checkbox("Generate Mipmaps", &mSettings.GenerateMipmaps);
+        ImGui::Checkbox("sRGB", &mSettings.IsSrgb);
+        ImGui::Checkbox("Normal Map Mode", &mSettings.IsNormalMap);
+        ImGui::Checkbox("Reconstruct Z", &mSettings.ReconstructZ);
+        ImGui::SliderFloat("Alpha Weight", &mSettings.AlphaWeight, 0.0f, 2.0f);
+        ImGui::EndDisabled();
     }
 
     const char* ChannelItems[] { "RGBA", "R", "G", "B", "A", "Diff" };
@@ -560,6 +618,9 @@ void ViewerApplication::RenderUi() {
         ImGui::Image(reinterpret_cast<ImTextureID>(mCompressedGpuHandle.ptr), DrawSize);
     } else {
         ImGui::Dummy(DrawSize);
+    }
+    if (!HasTexture) {
+        ImGui::Text("텍스처를 드래그 앤 드롭하면 실시간 압축 결과를 표시합니다.");
     }
     ImGui::End();
 }
@@ -630,15 +691,43 @@ void ViewerApplication::ProcessPendingDrop() {
         return;
     }
     mHasPendingDrop = false;
-    if (mAnalyzer.LoadTexture(mPendingDropPath)) {
-        RefreshSourceTexture();
-        RefreshCompressedTexture();
+    mIsProcessing = true;
+    mHasLastError = false;
+    const auto StartLoadTime { std::chrono::steady_clock::now() };
+    const bool IsLoaded { mAnalyzer.LoadTexture(mPendingDropPath) };
+    const auto EndLoadTime { std::chrono::steady_clock::now() };
+    mLastLoadSeconds = std::chrono::duration<double>(EndLoadTime - StartLoadTime).count();
+    mLastCompressSeconds = mLastLoadSeconds;
+    mIsProcessing = false;
+    if (!IsLoaded) {
+        mHasLastError = true;
+        return;
     }
+    RefreshSourceTexture();
+    RefreshCompressedTexture();
+}
+
+bool ViewerApplication::ApplySettingsWithoutGpuRefresh() {
+    if (!mAnalyzer.HasTexture()) {
+        return false;
+    }
+    mIsProcessing = true;
+    const auto StartCompressTime { std::chrono::steady_clock::now() };
+    const bool IsApplied { mAnalyzer.ApplySettings(mSettings) };
+    const auto EndCompressTime { std::chrono::steady_clock::now() };
+    mLastCompressSeconds = std::chrono::duration<double>(EndCompressTime - StartCompressTime).count();
+    mIsProcessing = false;
+    return IsApplied;
 }
 
 void ViewerApplication::ApplySettingsAndRefreshPreview() {
-    if (mAnalyzer.ApplySettings(mSettings)) {
+    mHasLastError = false;
+    if (ApplySettingsWithoutGpuRefresh()) {
         RefreshCompressedTexture();
+        return;
+    }
+    if (mAnalyzer.HasTexture()) {
+        mHasLastError = true;
     }
 }
 
