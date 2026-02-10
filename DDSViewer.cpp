@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <string>
+#include <future>
+#include <chrono>
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
@@ -41,7 +43,7 @@ ViewerApplication::ViewerApplication() :
     mFenceEvent {},
     mAnalyzer {},
     mUploader {},
-    mSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_FANT, true, false, false, false, CompressionQualityLevel::Normal, ChannelViewMode::Rgba, 1.0f },
+    mSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_FANT, false, false, false, false, CompressionQualityLevel::Fast, ChannelViewMode::Rgba, 1.0f },
     mFormatOptions {},
     mSelectedFormatIndex { 0 },
     mSourceTexture {},
@@ -57,7 +59,11 @@ ViewerApplication::ViewerApplication() :
     mHasSourceTexture { false },
     mHasCompressedTexture { false },
     mHasPendingDrop { false },
-    mPendingDropPath {} {
+    mPendingDropPath {},
+    mIsTaskRunning { false },
+    mAnalyzerTask {},
+    mLastLoadDuration { 0 },
+    mLastCompressionDuration { 0 } {
 }
 
 ViewerApplication::~ViewerApplication() {
@@ -100,7 +106,11 @@ ViewerApplication::ViewerApplication(const ViewerApplication& Other) :
     mHasSourceTexture { Other.mHasSourceTexture },
     mHasCompressedTexture { Other.mHasCompressedTexture },
     mHasPendingDrop { Other.mHasPendingDrop },
-    mPendingDropPath { std::move(Other.mPendingDropPath) } {
+    mPendingDropPath { Other.mPendingDropPath },
+    mIsTaskRunning { false },
+    mAnalyzerTask {},
+    mLastLoadDuration { Other.mLastLoadDuration },
+    mLastCompressionDuration { Other.mLastCompressionDuration } {
     memcpy(mWindowClassName, Other.mWindowClassName, sizeof(mWindowClassName));
 }
 
@@ -127,6 +137,10 @@ ViewerApplication& ViewerApplication::operator=(const ViewerApplication& Other) 
         mHasCompressedTexture = Other.mHasCompressedTexture;
         mHasPendingDrop = Other.mHasPendingDrop;
         mPendingDropPath = Other.mPendingDropPath;
+        mIsTaskRunning = false;
+        mAnalyzerTask = {};
+        mLastLoadDuration = Other.mLastLoadDuration;
+        mLastCompressionDuration = Other.mLastCompressionDuration;
     }
     return *this;
 }
@@ -166,11 +180,16 @@ ViewerApplication::ViewerApplication(ViewerApplication&& Other) noexcept :
     mHasSourceTexture { Other.mHasSourceTexture },
     mHasCompressedTexture { Other.mHasCompressedTexture },
     mHasPendingDrop { Other.mHasPendingDrop },
-    mPendingDropPath { std::move(Other.mPendingDropPath) } {
+    mPendingDropPath { std::move(Other.mPendingDropPath) },
+    mIsTaskRunning { false },
+    mAnalyzerTask {},
+    mLastLoadDuration { Other.mLastLoadDuration },
+    mLastCompressionDuration { Other.mLastCompressionDuration } {
     memcpy(mWindowClassName, Other.mWindowClassName, sizeof(mWindowClassName));
     Other.mWindowHandle = nullptr;
     Other.mFenceEvent = nullptr;
     Other.mHasPendingDrop = false;
+    Other.mIsTaskRunning = false;
 }
 
 ViewerApplication& ViewerApplication::operator=(ViewerApplication&& Other) noexcept {
@@ -210,9 +229,14 @@ ViewerApplication& ViewerApplication::operator=(ViewerApplication&& Other) noexc
         mHasCompressedTexture = Other.mHasCompressedTexture;
         mHasPendingDrop = Other.mHasPendingDrop;
         mPendingDropPath = std::move(Other.mPendingDropPath);
+        mIsTaskRunning = false;
+        mAnalyzerTask = {};
+        mLastLoadDuration = Other.mLastLoadDuration;
+        mLastCompressionDuration = Other.mLastCompressionDuration;
         Other.mWindowHandle = nullptr;
         Other.mFenceEvent = nullptr;
         Other.mHasPendingDrop = false;
+        Other.mIsTaskRunning = false;
     }
     return *this;
 }
@@ -246,6 +270,7 @@ int ViewerApplication::Run() {
             break;
         }
         ProcessPendingDrop();
+        ProcessAsyncTaskResult();
         if (!BeginFrame()) {
             continue;
         }
@@ -439,6 +464,18 @@ bool ViewerApplication::BeginFrame() {
 void ViewerApplication::RenderUi() {
     ImGui::Begin("Texture Artifact Analyzer");
 
+    if (mIsTaskRunning) {
+        ImGui::Text("Loading or compressing in progress...");
+    }
+    if (mLastLoadDuration.count() > 0) {
+        ImGui::Text("Last load time: %lld ms", static_cast<long long>(mLastLoadDuration.count()));
+    }
+    if (mLastCompressionDuration.count() > 0) {
+        ImGui::Text("Last compression time: %lld ms", static_cast<long long>(mLastCompressionDuration.count()));
+    }
+
+    ImGui::BeginDisabled(mIsTaskRunning);
+
     if (!mFormatOptions.empty()) {
         std::vector<const char*> FormatNames {};
         FormatNames.reserve(mFormatOptions.size());
@@ -516,9 +553,13 @@ void ViewerApplication::RenderUi() {
         mSettings.ChannelView = static_cast<ChannelViewMode>(ChannelIndex);
     }
 
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(mIsTaskRunning || !mHasCompressedTexture);
     if (ImGui::Button("Save as DDS")) {
         mAnalyzer.SaveCurrentAsDds();
     }
+    ImGui::EndDisabled();
 
     const TextureMemoryMetrics Metrics { mAnalyzer.GetMetrics() };
     ImGui::Text("Source: %zu bytes", Metrics.SourceBytes);
@@ -626,20 +667,80 @@ void ViewerApplication::HandleDroppedFile(HDROP DropHandle) {
 }
 
 void ViewerApplication::ProcessPendingDrop() {
-    if (!mHasPendingDrop) {
+    if (!mHasPendingDrop || mIsTaskRunning) {
         return;
     }
     mHasPendingDrop = false;
-    if (mAnalyzer.LoadTexture(mPendingDropPath)) {
+    StartLoadTask(mPendingDropPath);
+}
+
+void ViewerApplication::ProcessAsyncTaskResult() {
+    if (!mIsTaskRunning) {
+        return;
+    }
+    if (!mAnalyzerTask.valid()) {
+        mIsTaskRunning = false;
+        return;
+    }
+    if (mAnalyzerTask.wait_for(std::chrono::milliseconds { 0 }) != std::future_status::ready) {
+        return;
+    }
+    AnalyzerTaskResult TaskResult { mAnalyzerTask.get() };
+    mIsTaskRunning = false;
+    if (!TaskResult.IsSuccess) {
+        return;
+    }
+    mAnalyzer = std::move(TaskResult.Analyzer);
+    mSettings = TaskResult.Settings;
+    if (TaskResult.IsLoadTask) {
+        mLastLoadDuration = TaskResult.Duration;
         RefreshSourceTexture();
         RefreshCompressedTexture();
+        return;
     }
+    mLastCompressionDuration = TaskResult.Duration;
+    RefreshCompressedTexture();
+}
+
+void ViewerApplication::StartLoadTask(const std::filesystem::path& FilePath) {
+    if (mIsTaskRunning) {
+        return;
+    }
+    mIsTaskRunning = true;
+    const AnalyzerSettings Settings { mSettings };
+    mAnalyzerTask = std::async(std::launch::async, [FilePath, Settings]() {
+        AnalyzerTaskResult Result { false, true, TextureArtifactAnalyzer {}, Settings, std::chrono::milliseconds { 0 } };
+        const auto BeginTime { std::chrono::steady_clock::now() };
+        if (!Result.Analyzer.LoadTexture(FilePath)) {
+            return Result;
+        }
+        Result.Duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - BeginTime);
+        Result.Settings = Settings;
+        Result.IsSuccess = true;
+        return Result;
+    });
+}
+
+void ViewerApplication::StartSettingsTask(const AnalyzerSettings& Settings) {
+    if (mIsTaskRunning) {
+        return;
+    }
+    mIsTaskRunning = true;
+    TextureArtifactAnalyzer AnalyzerSnapshot { mAnalyzer };
+    mAnalyzerTask = std::async(std::launch::async, [AnalyzerSnapshot, Settings]() mutable {
+        AnalyzerTaskResult Result { false, false, std::move(AnalyzerSnapshot), Settings, std::chrono::milliseconds { 0 } };
+        const auto BeginTime { std::chrono::steady_clock::now() };
+        if (!Result.Analyzer.ApplySettings(Settings)) {
+            return Result;
+        }
+        Result.Duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - BeginTime);
+        Result.IsSuccess = true;
+        return Result;
+    });
 }
 
 void ViewerApplication::ApplySettingsAndRefreshPreview() {
-    if (mAnalyzer.ApplySettings(mSettings)) {
-        RefreshCompressedTexture();
-    }
+    StartSettingsTask(mSettings);
 }
 
 void ViewerApplication::RefreshSourceTexture() {

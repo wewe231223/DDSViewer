@@ -62,7 +62,7 @@ bool TextureDocument::LoadFromFile(const std::filesystem::path& FilePath) {
     mPath = FilePath;
     mSourceImage.Release();
     mMetadata = {};
-    const HRESULT Hr { LoadFromWICFile(FilePath.c_str(), WIC_FLAGS_FORCE_RGB, &mMetadata, mSourceImage) };
+    const HRESULT Hr { LoadFromWICFile(FilePath.c_str(), WIC_FLAGS_DEFAULT, &mMetadata, mSourceImage) };
     return SUCCEEDED(Hr);
 }
 
@@ -273,7 +273,7 @@ bool Dx12TextureUploader::CreateTextureAndUpload(ID3D12Device* Device, ID3D12Gra
 TextureArtifactAnalyzer::TextureArtifactAnalyzer() :
     mDocument {},
     mPreviewCache {},
-    mCurrentSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_DEFAULT, true, false, false, false, CompressionQualityLevel::Normal, ChannelViewMode::Rgba, 1.0f },
+    mCurrentSettings { DXGI_FORMAT_BC7_UNORM, TEX_FILTER_DEFAULT, false, false, false, false, CompressionQualityLevel::Fast, ChannelViewMode::Rgba, 1.0f },
     mViewport { 1.0f, XMFLOAT2 { 0.0f, 0.0f }, XMFLOAT2 { 0.0f, 0.0f }, false } {
 }
 

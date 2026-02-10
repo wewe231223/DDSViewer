@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <future>
+#include <chrono>
 #include <wrl/client.h>
 #include <dxgi1_6.h>
 #include <d3d12.h>
@@ -65,9 +67,20 @@ private:
 
     void HandleDroppedFile(HDROP DropHandle);
     void ProcessPendingDrop();
+    void ProcessAsyncTaskResult();
+    void StartLoadTask(const std::filesystem::path& FilePath);
+    void StartSettingsTask(const AnalyzerSettings& Settings);
     void ApplySettingsAndRefreshPreview();
     void RefreshSourceTexture();
     void RefreshCompressedTexture();
+
+    struct AnalyzerTaskResult {
+        bool IsSuccess;
+        bool IsLoadTask;
+        TextureArtifactAnalyzer Analyzer;
+        AnalyzerSettings Settings;
+        std::chrono::milliseconds Duration;
+    };
 
 private:
     static constexpr UINT FrameCount { 2 };
@@ -113,4 +126,8 @@ private:
     bool mHasCompressedTexture;
     bool mHasPendingDrop;
     std::filesystem::path mPendingDropPath;
+    bool mIsTaskRunning;
+    std::future<AnalyzerTaskResult> mAnalyzerTask;
+    std::chrono::milliseconds mLastLoadDuration;
+    std::chrono::milliseconds mLastCompressionDuration;
 };
