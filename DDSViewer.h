@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <chrono>
 #include <wrl/client.h>
 #include <dxgi1_6.h>
 #include <d3d12.h>
@@ -66,6 +67,7 @@ private:
     void HandleDroppedFile(HDROP DropHandle);
     void ProcessPendingDrop();
     void ApplySettingsAndRefreshPreview();
+    bool ApplySettingsWithoutGpuRefresh();
     void RefreshSourceTexture();
     void RefreshCompressedTexture();
 
@@ -112,5 +114,9 @@ private:
     bool mHasSourceTexture;
     bool mHasCompressedTexture;
     bool mHasPendingDrop;
+    bool mIsProcessing;
+    bool mHasLastError;
+    double mLastLoadSeconds;
+    double mLastCompressSeconds;
     std::filesystem::path mPendingDropPath;
 };
