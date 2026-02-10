@@ -6,8 +6,16 @@
 #include <array>
 #include <string>
 #include <imgui.h>
-#include <backends/imgui_impl_win32.h>
-#include <backends/imgui_impl_dx12.h>
+#include <imgui_impl_win32.h>
+#include <imgui_impl_dx12.h>
+
+#ifdef min
+#undef min
+#endif 
+
+#ifdef max 
+#undef max 
+#endif 
 
 using namespace DirectX;
 using namespace Microsoft::WRL;

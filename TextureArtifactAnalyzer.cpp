@@ -238,11 +238,11 @@ bool Dx12TextureUploader::CreateTextureAndUpload(ID3D12Device* Device, ID3D12Gra
         return false;
     }
 
-    const Image* Images { Image.GetImages() };
+    const DirectX::Image* Images { Image.GetImages() };
     for (UINT Index { 0 }; Index < SubresourceCount; ++Index) {
         const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& Footprint { Footprints[Index] };
         uint8_t* DestBase { Mapped + Footprint.Offset };
-        const Image& Src { Images[Index] };
+        const DirectX::Image& Src { Images[Index] };
         for (UINT Row { 0 }; Row < NumRows[Index]; ++Row) {
             uint8_t* Dest { DestBase + static_cast<size_t>(Row) * Footprint.Footprint.RowPitch };
             const uint8_t* Source { Src.pixels + static_cast<size_t>(Row) * Src.rowPitch };
