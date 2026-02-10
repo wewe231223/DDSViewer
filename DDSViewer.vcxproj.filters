@@ -27,9 +27,15 @@
     <ClInclude Include="DDSViewer.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="TextureArtifactAnalyzer.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DDSViewer.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="TextureArtifactAnalyzer.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
